@@ -1,11 +1,13 @@
 package components
 
 import (
-	"database/sql"
 	"fmt"
 	"os"
 	"time"
 
+	"database/sql"
+
+	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -33,7 +35,11 @@ func (s *PostgresStore) Init() error {
 }
 
 func NewPostgresStore() (*PostgresStore, error) {
-	connstr := os.Getenv("ConnectionString")
+	err := godotenv.Load()
+	if err != nil {
+		return nil, err
+	}
+	connstr := os.Getenv("connstr")
 	db, err := sql.Open("postgres", connstr)
 	if err != nil {
 		return nil, err
@@ -51,7 +57,7 @@ func (s *PostgresStore) CreateUsersTable() error {
 	id integer generated always as identity primary key,
 	email varchar(255) not null,
 	encrypted_password varchar(100) not null,
-	verified boolean default false,
+	verified boolean default false
 	)`
 	_, err := s.db.Exec(query)
 	return err
@@ -60,14 +66,13 @@ func (s *PostgresStore) CreateUsersTable() error {
 func (s *PostgresStore) insertIntoUser(newuser NewUserRequest) (*User, error) {
 	query := `insert into users
 	(email,encrypted_password,verified)
-	values($1,$2,$3)
-	`
+	values($1,$2,$3)`
 	encpw, err := bcrypt.GenerateFromPassword([]byte(newuser.Password), bcrypt.DefaultCost)
 	if err != nil {
 		return nil, err
 	}
 
-	row := s.db.QueryRow(query, newuser.Email, string(encpw), 0)
+	row := s.db.QueryRow(query, newuser.Email, string(encpw), false)
 	var user User
 	err = row.Scan(&user.ID, &user.Email, &user.Encrypted_Password, &user.Verified)
 	if err != nil {
@@ -82,7 +87,7 @@ func (s *PostgresStore) CreateEmalVerificationTable() error {
 	user_id integer,
 	token varchar(32) not null,
 	expires_at timestamp not null,
-	foreign key (user_id) references users(id),
+	foreign key (user_id) references users(id)
 	)`
 	_, err := s.db.Exec(query)
 	return err
@@ -91,8 +96,7 @@ func (s *PostgresStore) CreateEmalVerificationTable() error {
 func (s *PostgresStore) insertIntoEmailVerification(userID uint64, token string) error {
 	expiration := time.Now().Add(5 * time.Minute)
 	query := `insert into emailverification(user_id,token,expires_at)
-	values($1,$2,$3)
-	`
+	values($1,$2,$3)`
 	_, err := s.db.Exec(
 		query,
 		userID,
@@ -129,15 +133,15 @@ func (s *PostgresStore) VerifyToken(token string) error {
 	rows := s.db.QueryRow("select  expires_at from emailverification where token=$1", token)
 	err := rows.Scan(&userID, &expiresAt)
 	if err != nil {
-		return fmt.Errorf("Verify Again")
+		return fmt.Errorf("verify again")
 	}
 	if time.Now().After(expiresAt) {
 		return fmt.Errorf("token expired")
 	}
-	_, err = s.db.Exec("update users set verified=1 where id=$1", userID)
+	_, err = s.db.Exec("update users set verified=true where id=$1", userID)
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec("Delete from emailverification where token=$1", token)
+	_, err = s.db.Exec("delete from emailverification where token=$1", token)
 	return err
 }
