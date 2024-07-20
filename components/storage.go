@@ -2,6 +2,7 @@ package components
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"time"
 
@@ -14,8 +15,9 @@ import (
 
 type Storage interface {
 	NewRegistraion(NewUserRequest) (*User, error)
-	EmailVerification(uint64, string) error
+	StoreInEmailVerification(uint64, string) error
 	VerifyToken(string) error
+	GetUserByEmail(string) (*User, error)
 }
 
 type PostgresStore struct {
@@ -71,16 +73,39 @@ func (s *PostgresStore) insertIntoUser(newuser NewUserRequest) (*User, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	row := s.db.QueryRow(query, newuser.Email, string(encpw), false)
-	var user User
-	err = row.Scan(&user.ID, &user.Email, &user.Encrypted_Password, &user.Verified)
+	_, err = s.db.Exec(query, newuser.Email, string(encpw), false)
 	if err != nil {
 		return nil, err
 	}
-	return &user, nil
+	user, err := s.GetUserByEmail(newuser.Email)
+	return user, err
 
 }
+
+func (s *PostgresStore) GetUserByEmail(email string) (*User, error) {
+	query := `SELECT id, email, encrypted_password, verified FROM users WHERE email = $1`
+	rows, err := s.db.Query(query, email)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	user := new(User)
+	if rows.Next() {
+		err := rows.Scan(&user.ID, &user.Email, &user.Encrypted_Password, &user.Verified)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		return nil, fmt.Errorf("user not found")
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return user, nil
+}
+
 
 func (s *PostgresStore) CreateEmalVerificationTable() error {
 	query := `create table if not exists emailverification(
@@ -118,7 +143,7 @@ func (s *PostgresStore) NewRegistraion(newuser NewUserRequest) (*User, error) {
 	return user, nil
 }
 
-func (s *PostgresStore) EmailVerification(userID uint64, token string) error {
+func (s *PostgresStore) StoreInEmailVerification(userID uint64, token string) error {
 	err := s.insertIntoEmailVerification(userID, token)
 	if err != nil {
 		return err
@@ -130,18 +155,23 @@ func (s *PostgresStore) VerifyToken(token string) error {
 	var userID uint64
 	var expiresAt time.Time
 
-	rows := s.db.QueryRow("select  expires_at from emailverification where token=$1", token)
+	rows := s.db.QueryRow("select user_id, expires_at from emailverification where token=$1", token)
 	err := rows.Scan(&userID, &expiresAt)
 	if err != nil {
+		log.Println(err)
 		return fmt.Errorf("verify again")
 	}
 	if time.Now().After(expiresAt) {
+		_,err= s.db.Exec("delete from emailverification where token=$1", token)
+		log.Println(err)
 		return fmt.Errorf("token expired")
 	}
 	_, err = s.db.Exec("update users set verified=true where id=$1", userID)
 	if err != nil {
+		log.Println(err)
 		return err
 	}
 	_, err = s.db.Exec("delete from emailverification where token=$1", token)
+	log.Println(err)
 	return err
 }
