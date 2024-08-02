@@ -22,6 +22,7 @@ type Storage interface {
 	VerifyTokenforResetPassword(string,uint64)error
 	ResetPassword(uint64,string)error
 	DeleteTokenforForgetPasswordfromDB(string,uint64)error
+	AuthenticateLogin(string ,string) (*User,bool)
 }
 
 type PostgresStore struct {
@@ -258,3 +259,20 @@ func(s *PostgresStore)ResetPassword(userID uint64,newPassword string)error{
 	return nil
 }
 
+func verifyPassword(encpw string,password string)bool{
+	return bcrypt.CompareHashAndPassword([]byte(encpw),[]byte(password))==nil
+}
+
+
+func(s *PostgresStore)AuthenticateLogin(email ,password string) (*User,bool){
+  user,err:=s.GetUserByEmail(email)
+  if err!=nil{
+	return nil,false
+  }
+  
+  if !verifyPassword(user.Encrypted_Password,password){
+	return nil,false
+  }
+  return user,true
+
+}

@@ -10,7 +10,9 @@ import (
 	"net/smtp"
 	"os"
 	"strconv"
+	"time"
 
+	"github.com/golang-jwt/jwt"
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
 	"golang.org/x/crypto/bcrypt"
@@ -49,10 +51,10 @@ func (s *Server) Run() {
 	router.HandleFunc("/test", s.handleTest)
 	router.HandleFunc("/forgotpassword/verify", s.HandleForgotPassword)
 	router.HandleFunc("/forgotpassword/verify/reset", s.HandleResetPassword)
+	router.HandleFunc("/login",s.handleLogin)
 
 	log.Println("JSON API server is running on port:", s.listenAddr)
 	http.ListenAndServe(s.listenAddr, router)
-
 }
 
 func (s *Server) handleTest(w http.ResponseWriter, r *http.Request) {
@@ -97,7 +99,6 @@ func (s *Server) handleregister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, "Email sent Successfully: Check your Email")
-	return
 }
 
 func (s *Server) NewUserRegistration(newuser NewUserRequest) error {
@@ -199,16 +200,37 @@ func (s *Server) HandleResetPassword(w http.ResponseWriter, r *http.Request) {
 
 }
 
-func (s *Server) VerifyResetPasswordToken(r *http.Request) ( error) {
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	var user NewUserRequest
+	err := json.NewDecoder(r.Body).Decode(&user)
+	if err != nil {
+		return
+	}
+	userData, valid := s.store.AuthenticateLogin(user.Email, user.Password)
+	if !valid {
+		WriteJSON(w,http.StatusForbidden,serverError{Error: "wrong email or password"})
+		return
+	}
+    token,err:=createJWT(userData)
+	if err!=nil{
+		WriteJSON(w,http.StatusBadGateway,serverError{Error: err.Error()})
+		return
+	}
+
+	WriteJSON(w,http.StatusOK,LoginResponse{Email: user.Email,Token: token})
+
+}
+
+func (s *Server) VerifyResetPasswordToken(r *http.Request) error {
 	token, userID, err := s.getTokenAndUSERID(r)
 	if err != nil {
-		return  err
+		return err
 	}
 	err = s.store.VerifyTokenforResetPassword(token, userID)
 	if err != nil {
-		return  err
+		return err
 	}
-	return  nil
+	return nil
 }
 
 func (s *Server) getTokenAndUSERID(r *http.Request) (string, uint64, error) {
@@ -223,16 +245,16 @@ func (s *Server) getTokenAndUSERID(r *http.Request) (string, uint64, error) {
 
 func (s *Server) ResetPasswordFunc(r *http.Request) error {
 
-	 err := s.VerifyResetPasswordToken(r)
-	 if err!=nil{
+	err := s.VerifyResetPasswordToken(r)
+	if err != nil {
 		return err
-	 }
-	 token, userID, err := s.getTokenAndUSERID(r)
-	 if err!=nil{
+	}
+	token, userID, err := s.getTokenAndUSERID(r)
+	if err != nil {
 		return err
-	 }
+	}
 
-	err = s.store.DeleteTokenforForgetPasswordfromDB(token,userID)
+	err = s.store.DeleteTokenforForgetPasswordfromDB(token, userID)
 	if err != nil {
 		return fmt.Errorf("not authorised")
 	}
@@ -245,11 +267,48 @@ func (s *Server) ResetPasswordFunc(r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	err=sendPasswordResetSuccessfulEmai(newpasswordreq.Email)
-	if err!=nil{
+	err = sendPasswordResetSuccessfulEmai(newpasswordreq.Email)
+	if err != nil {
 		return err
 	}
 	return nil
+}
+// func withJWTAuth(handlerFunc http.HandlerFunc, s Storage){
+
+// }
+
+func createJWT(user *User)(string,error){
+	err:=godotenv.Load()
+	if err!=nil{
+		return "",err
+	}
+	key:=os.Getenv("secretKey")
+	token:=jwt.NewWithClaims(jwt.SigningMethodHS256,jwt.MapClaims{
+		"user":user.Email,
+		"exp":time.Now().Add(time.Hour*72).Unix(),
+	})
+
+	tokenString,err:=token.SignedString([]byte(key))
+	if err != nil {
+        fmt.Println("Error creating the token:", err)
+        return "",err
+    }
+	return tokenString,nil
+}
+
+func validateJWT(tokenString string)(*jwt.Token,error){
+	err:=godotenv.Load()
+	if err!=nil{
+		return nil,err
+	}
+	key:=os.Getenv("secretKey")
+
+	return jwt.Parse(tokenString,func(token *jwt.Token)(interface{},error){
+		if _,ok:=token.Method.(*jwt.SigningMethodHMAC); !ok{
+			return nil,fmt.Errorf("unexpected signing method: %v",token.Header["alg"])
+		}
+		return []byte(key),nil
+	})
 }
 
 func GenerateToken() (string, error) {
@@ -310,22 +369,22 @@ func SendPasswordVerificationEmail(email, token string, id string) error {
 	return smtp.SendMail(smtpHost+":"+smtpPort, auth, from, []string{email}, []byte(msg))
 }
 
-func sendPasswordResetSuccessfulEmai(email string)error{
-	err:=godotenv.Load()
-	if err!=nil{
+func sendPasswordResetSuccessfulEmai(email string) error {
+	err := godotenv.Load()
+	if err != nil {
 		return err
 	}
-	from :=os.Getenv("emailID")
+	from := os.Getenv("emailID")
 	password := os.Getenv("apppassword")
-	company:=os.Getenv("companyName")
-	smtpHost:=os.Getenv("smtpHost")
-	smtpPort:=os.Getenv("smtpPort")
+	company := os.Getenv("companyName")
+	smtpHost := os.Getenv("smtpHost")
+	smtpPort := os.Getenv("smtpPort")
 
-	msg:="Greetings from " + company + ",\n\n\n" +
-	"Password reset success\n\n"+
-	"Hello "+email+",\n\n"+
-	"This is to confirm that you have successfully changed your password associated with"+company+"account. Please sign-in to your account."
+	msg := "Greetings from " + company + ",\n\n\n" +
+		"Password reset success\n\n" +
+		"Hello " + email + ",\n\n" +
+		"This is to confirm that you have successfully changed your password associated with " + company + " account. \n\n Please sign-in to your account."
 
-	auth:=smtp.PlainAuth("",from,password,smtpHost)
-	return smtp.SendMail(smtpHost+":"+smtpPort,auth,from,[]string{email},[]byte(msg))
+	auth := smtp.PlainAuth("", from, password, smtpHost)
+	return smtp.SendMail(smtpHost+":"+smtpPort, auth, from, []string{email}, []byte(msg))
 }

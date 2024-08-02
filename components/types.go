@@ -7,6 +7,12 @@ type NewUserRequest struct {
 	Password string `json:"password"`
 }
 
+
+type LoginResponse struct{
+	Email string `json:"email"`
+	Token string `json:"token"`
+}
+
 type User struct {
 	ID                 uint64 `json:"id"`
 	Email              string `json:"email"`
