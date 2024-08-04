@@ -47,15 +47,15 @@ func (s *Server) Run() {
 	router := mux.NewRouter()
 	router.HandleFunc("/register", s.handleregister)
 	router.HandleFunc("/verify", s.handleVerification)
-	router.HandleFunc("/emailverification/{email}",withJWTAuth(s.handleSendEmailforVerification))  //email as var and id as query   `/emailverification/user@example.com?id=123`
+	router.HandleFunc("/emailverification/{userID}", withJWTAuth(s.handleSendEmailforVerification)) //email as var and id as query   `/emailverification/user@example.com?id=123`
 	router.HandleFunc("/forgotpassword", s.ForgotPassword)
 	router.HandleFunc("/test", s.handleTest)
 	router.HandleFunc("/forgotpassword/verify", s.HandleForgotPassword)
 	router.HandleFunc("/forgotpassword/verify/reset", s.HandleResetPassword)
-	router.HandleFunc("/login",s.handleLogin)
+	router.HandleFunc("/login", s.handleLogin)
 
-	router.HandleFunc("/{email}/profile/update",withJWTAuth(s.handleUserProfileUpdation))
-
+	router.HandleFunc("/{userID}/profile", withJWTAuth(s.handleGetUserProfile))
+	router.HandleFunc("/{userID}/profile/update", withJWTAuth(s.handleUserProfileUpdation))
 
 	log.Println("JSON API server is running on port:", s.listenAddr)
 	http.ListenAndServe(s.listenAddr, router)
@@ -77,16 +77,16 @@ func (s *Server) handleregister(w http.ResponseWriter, r *http.Request) {
 	existingUser, err := s.store.GetUserByEmail(newuser.Email)
 	log.Println(err)
 	if existingUser != nil {
-			WriteJSON(w, http.StatusBadRequest, serverError{Error: "user is already registered log in using right credential"})
-			return
-		}
-	
-	existingUSERwithUserID,err:=s.store.GetUserByUID(newuser.U_ID)
+		WriteJSON(w, http.StatusBadRequest, serverError{Error: "user is already registered log in using right credential"})
+		return
+	}
+
+	existingUSERwithUserID, err := s.store.GetUserByUID(newuser.U_ID)
 	log.Println(err)
 	if existingUSERwithUserID != nil {
-			WriteJSON(w, http.StatusBadRequest, serverError{Error: "this username is already taken"})
-			return
-		}
+		WriteJSON(w, http.StatusBadRequest, serverError{Error: "this username is already taken"})
+		return
+	}
 
 	err = s.NewUserRegistration(newuser)
 	if err != nil {
@@ -102,8 +102,8 @@ func (s *Server) NewUserRegistration(newuser NewUserRequest) error {
 		log.Println(fmt.Errorf("error occured"))
 		return err
 	}
-	_,err=s.store.AddIntoUserProfile(UserProfile{U_ID: newuser.U_ID,})
-	if err!=nil{
+	_, err = s.store.AddIntoUserProfile(UserProfile{U_ID: newuser.U_ID})
+	if err != nil {
 		return err
 	}
 	err = s.EmailVerification(newuser.Email, user.ID)
@@ -133,21 +133,26 @@ func (s *Server) EmailVerification(email string, userID uint64) error {
 	return nil
 }
 
-func (s *Server)handleSendEmailforVerification(w http.ResponseWriter,r *http.Request){
-	email:=mux.Vars(r)["email"]
-	idString:=r.URL.Query().Get("id")   // `/emailverification/user@example.com?id=123`
-	id,err:=strconv.Atoi(idString)
-	if err!=nil{
-		WriteJSON(w,http.StatusInternalServerError,serverError{Error: err.Error()})
-		return 
+func (s *Server) handleSendEmailforVerification(w http.ResponseWriter, r *http.Request) {
+	userID := mux.Vars(r)["userID"]
+	user, err := s.store.GetUserByUID(userID)
+	if err != nil {
+		WriteJSON(w, http.StatusBadRequest, serverError{Error: err.Error()})
+		return
 	}
-	err=s.EmailVerification(email,uint64(id))
-	if err!=nil{
-		WriteJSON(w,http.StatusInternalServerError,serverError{Error: err.Error()})
-		return 
+	idString := r.URL.Query().Get("id") // `/emailverification/user@example.com?id=123`
+	id, err := strconv.Atoi(idString)
+	if err != nil {
+		WriteJSON(w, http.StatusInternalServerError, serverError{Error: err.Error()})
+		return
+	}
+	err = s.EmailVerification(user.Email, uint64(id))
+	if err != nil {
+		WriteJSON(w, http.StatusInternalServerError, serverError{Error: err.Error()})
+		return
 	}
 	WriteJSON(w, http.StatusOK, "Email sent Successfully: Check your Email")
-	
+
 }
 
 func (s *Server) handleVerification(w http.ResponseWriter, r *http.Request) {
@@ -224,34 +229,44 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	userData, valid := s.store.AuthenticateLogin(user.Email, user.Password)
 	if !valid {
-		WriteJSON(w,http.StatusForbidden,serverError{Error: "wrong email or password"})
+		WriteJSON(w, http.StatusForbidden, serverError{Error: "wrong email or password"})
 		return
 	}
-    token,err:=createJWT(userData)
-	if err!=nil{
-		WriteJSON(w,http.StatusBadGateway,serverError{Error: err.Error()})
+	token, err := createJWT(userData)
+	if err != nil {
+		WriteJSON(w, http.StatusBadGateway, serverError{Error: err.Error()})
 		return
 	}
 
-	WriteJSON(w,http.StatusOK,LoginResponse{U_ID:userData.U_ID,Email: user.Email,Token: token,Verified: userData.Verified})
+	WriteJSON(w, http.StatusOK, LoginResponse{U_ID: userData.U_ID, Email: user.Email, Token: token, Verified: userData.Verified})
 
 }
 
-func(s *Server) handleUserProfileUpdation(w http.ResponseWriter,r *http.Request){
+func (s *Server) handleUserProfileUpdation(w http.ResponseWriter, r *http.Request) {
 	var userData UserProfile
-	err:=json.NewDecoder(r.Body).Decode(&userData)
-	if err!=nil{
-		WriteJSON(w,http.StatusBadRequest,serverError{Error: "wrong format"})
+	err := json.NewDecoder(r.Body).Decode(&userData)
+	if err != nil {
+		WriteJSON(w, http.StatusBadRequest, serverError{Error: "wrong format"})
 		log.Println(err)
 		return
 	}
-	updatedUser,err:=s.store.UpdateUserProfile(userData)
-	if err!=nil{
-		WriteJSON(w,http.StatusBadRequest,serverError{Error: err.Error()})
+	updatedUser, err := s.store.UpdateUserProfile(userData)
+	if err != nil {
+		WriteJSON(w, http.StatusBadRequest, serverError{Error: err.Error()})
 		log.Println(err)
 		return
 	}
-	WriteJSON(w,http.StatusOK,updatedUser)
+	WriteJSON(w, http.StatusOK, updatedUser)
+}
+
+func (s *Server) handleGetUserProfile(w http.ResponseWriter, r *http.Request) {
+	userID := mux.Vars(r)["userID"]
+	userProfile, err := s.store.GetUserProfileByU_ID(userID)
+	if err != nil {
+		WriteJSON(w, http.StatusBadRequest, serverError{Error: "profile does not exists"})
+		return
+	}
+	WriteJSON(w, http.StatusOK, userProfile)
 }
 
 func (s *Server) VerifyResetPasswordToken(r *http.Request) error {
@@ -307,68 +322,68 @@ func (s *Server) ResetPasswordFunc(r *http.Request) error {
 	return nil
 }
 
-func withJWTAuth(handlerFunc http.HandlerFunc)http.HandlerFunc{
-	return func(w http.ResponseWriter,r *http.Request){
+func withJWTAuth(handlerFunc http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		fmt.Println("calling JWT auth middleware")
-		tokenString:=r.Header.Get("x-jwt-token")
+		tokenString := r.Header.Get("x-jwt-token")
 
-		token,err:=validateJWT(tokenString)
-		if err!=nil{
-			WriteJSON(w,http.StatusForbidden,serverError{Error: "forbidden"})
+		token, err := validateJWT(tokenString)
+		if err != nil {
+			WriteJSON(w, http.StatusForbidden, serverError{Error: "forbidden"})
 			return
 		}
-		if !token.Valid{
-			WriteJSON(w,http.StatusForbidden,serverError{Error: "forbidden"})
+		if !token.Valid {
+			WriteJSON(w, http.StatusForbidden, serverError{Error: "forbidden"})
 			return
 		}
-		claims:=token.Claims.(jwt.MapClaims)
-		email:=mux.Vars(r)["email"]
-		emailFromClaims,ok:=claims["email"].(string)
-		if !ok{
+		claims := token.Claims.(jwt.MapClaims)
+		userID := mux.Vars(r)["userID"]
+		userIDFromClaims, ok := claims["user"].(string)
+		if !ok {
 			WriteJSON(w, http.StatusForbidden, serverError{Error: "forbdden"})
 			return
 		}
-		if email!=emailFromClaims{
-			WriteJSON(w,http.StatusForbidden,serverError{Error:"unauthorised access"})
+		if userID != userIDFromClaims {
+			WriteJSON(w, http.StatusForbidden, serverError{Error: "unauthorised access"})
 			return
 		}
-		
-		handlerFunc(w,r)
-		
+
+		handlerFunc(w, r)
+
 	}
 }
 
-func createJWT(user *User)(string,error){
-	err:=godotenv.Load()
-	if err!=nil{
-		return "",err
+func createJWT(user *User) (string, error) {
+	err := godotenv.Load()
+	if err != nil {
+		return "", err
 	}
-	key:=os.Getenv("secretKey")
-	token:=jwt.NewWithClaims(jwt.SigningMethodHS256,jwt.MapClaims{
-		"email":user.Email,
-		"exp":time.Now().Add(time.Hour*72).Unix(),
+	key := os.Getenv("secretKey")
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"user": user.U_ID,
+		"exp":  time.Now().Add(time.Minute).Unix(),
 	})
 
-	tokenString,err:=token.SignedString([]byte(key))
+	tokenString, err := token.SignedString([]byte(key))
 	if err != nil {
-        fmt.Println("Error creating the token:", err)
-        return "",err
-    }
-	return tokenString,nil
+		fmt.Println("Error creating the token:", err)
+		return "", err
+	}
+	return tokenString, nil
 }
 
-func validateJWT(tokenString string)(*jwt.Token,error){
-	err:=godotenv.Load()
-	if err!=nil{
-		return nil,err
+func validateJWT(tokenString string) (*jwt.Token, error) {
+	err := godotenv.Load()
+	if err != nil {
+		return nil, err
 	}
-	key:=os.Getenv("secretKey")
+	key := os.Getenv("secretKey")
 
-	return jwt.Parse(tokenString,func(token *jwt.Token)(interface{},error){
-		if _,ok:=token.Method.(*jwt.SigningMethodHMAC); !ok{
-			return nil,fmt.Errorf("unexpected signing method: %v",token.Header["alg"])
+	return jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
-		return []byte(key),nil
+		return []byte(key), nil
 	})
 }
 
