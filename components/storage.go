@@ -11,6 +11,7 @@ import (
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/tools/go/analysis/passes/defers"
 )
 
 type Storage interface {
@@ -23,6 +24,9 @@ type Storage interface {
 	ResetPassword(uint64,string)error
 	DeleteTokenforForgetPasswordfromDB(string,uint64)error
 	AuthenticateLogin(string ,string) (*User,bool)
+	GetUserByUID(string)(*User,error)
+	AddIntoUserProfile(UserProfile)(*UserProfile,error)
+	UpdateUserProfile(UserProfile)(*UserProfile,error)
 }
 
 type PostgresStore struct {
@@ -39,6 +43,11 @@ func (s *PostgresStore) Init() error {
 		return err
 	}
 	err = s.CreateResetPasswordTable()
+	if err != nil {
+		return err
+	}
+
+	err = s.CreateUserProfileTable()
 	if err != nil {
 		return err
 	}
@@ -66,6 +75,7 @@ func NewPostgresStore() (*PostgresStore, error) {
 func (s *PostgresStore) CreateUsersTable() error {
 	query := `create table if not exists users(
 	id integer generated always as identity primary key,
+	userID varchar(50) unique not null ,
 	email varchar(255) not null,
 	encrypted_password varchar(100) not null,
 	verified boolean default false
@@ -74,15 +84,29 @@ func (s *PostgresStore) CreateUsersTable() error {
 	return err
 }
 
+
+func (s *PostgresStore)CreateUserProfileTable()error{
+	query:=`create table if not exists userprofile(
+	u_id varchar(50) primary key not null,
+	name varchar(100) default '',
+	bio varchar(100)  default '',
+	interests varchar(100) default '',
+	foreign key (u_id) references users(userID)
+	)`
+
+	_,err:=s.db.Exec(query)
+	return err
+}
+
 func (s *PostgresStore) insertIntoUser(newuser NewUserRequest) (*User, error) {
 	query := `insert into users
-	(email,encrypted_password,verified)
-	values($1,$2,$3)`
+	(userID,email,encrypted_password,verified)
+	values($1,$2,$3,$4)`
 	encpw, err := bcrypt.GenerateFromPassword([]byte(newuser.Password), bcrypt.DefaultCost)
 	if err != nil {
 		return nil, err
 	}
-	_, err = s.db.Exec(query, newuser.Email, string(encpw), false)
+	_, err = s.db.Exec(query,newuser.U_ID, newuser.Email, string(encpw), false)
 	if err != nil {
 		return nil, err
 	}
@@ -91,8 +115,39 @@ func (s *PostgresStore) insertIntoUser(newuser NewUserRequest) (*User, error) {
 
 }
 
+func (s *PostgresStore) insertIntoUserProfile(userProfile UserProfile)(*UserProfile,error){
+	query:=`insert into userprofile
+	(u_id,name,bio,interests)
+	values($1,$2,$3,$4)`
+	_,err:=s.db.Exec(query,userProfile.U_ID,userProfile.Name,userProfile.Bio,userProfile.Interests)
+	if err!=nil{
+		return nil,err
+	}
+	return &userProfile,nil
+}
+
+func(s *PostgresStore)AddIntoUserProfile(user UserProfile)(*UserProfile,error){
+	return s.insertIntoUserProfile(user)
+}
+
+func(s *PostgresStore)UpdateUserProfile(user UserProfile)(*UserProfile,error){
+	query:=`update userprofile set name=$1, bio=$2, interests=$3 where u_id=$4`
+	result,err:=s.db.Exec(query,user.Name,user.Bio,user.Interests,user.U_ID)
+	if err!=nil{
+		return nil,err
+	}
+	rowsAffected,err:=result.RowsAffected()
+	if err!=nil{
+		return nil,err
+	}
+	if rowsAffected==0{
+		return nil,fmt.Errorf("user does not exists")
+	}
+	return &user,nil
+}
+
 func (s *PostgresStore) GetUserByEmail(email string) (*User, error) {
-	query := `SELECT id, email, encrypted_password, verified FROM users WHERE email = $1`
+	query := `SELECT id, userID, email, encrypted_password, verified FROM users WHERE email = $1`
 	rows, err := s.db.Query(query, email)
 	if err != nil {
 		return nil, err
@@ -101,7 +156,7 @@ func (s *PostgresStore) GetUserByEmail(email string) (*User, error) {
 
 	user := new(User)
 	if rows.Next() {
-		err := rows.Scan(&user.ID, &user.Email, &user.Encrypted_Password, &user.Verified)
+		err := rows.Scan(&user.ID,&user.U_ID, &user.Email, &user.Encrypted_Password, &user.Verified)
 		if err != nil {
 			return nil, err
 		}
@@ -113,6 +168,42 @@ func (s *PostgresStore) GetUserByEmail(email string) (*User, error) {
 	}
 
 	return user, nil
+}
+
+func (s *PostgresStore)GetUserByUID(userID string)(*User,error){
+	query:=`select id, userID, email, encrypted_password, verified from users where userID = $1`
+	rows,err:=s.db.Query(query,userID)
+	if err!=nil{
+		return nil,err
+	}
+	defer rows.Close()
+
+	user:=new(User)
+	if rows.Next(){
+		err:=rows.Scan(&user.ID,&user.U_ID,&user.Email,&user.Encrypted_Password,&user.Verified)
+		if err!=nil{
+			return nil,err
+		}
+	}else{
+		return nil,fmt.Errorf("user not found")
+	}
+	if err=rows.Err(); err!=nil{
+		return nil,err
+	}
+	return user,nil
+}
+func(s *PostgresStore)GetUserProfileByU_ID(userID string)(*UserProfile,error){
+	query:=`select userID,name,bio,interests from userprofile where userID=$1`
+
+	rows,err:=s.db.Query(query,userID)
+	if err!=nil{
+		return nil,err
+	}
+	defer rows.Close()
+	var userProfile UserProfile
+	if rows.Next(){
+		err:=rows.Scan(&userProfile.U_ID,&userProfile.Name,&userProfile.)
+	}
 }
 
 
@@ -137,6 +228,8 @@ func (s *PostgresStore)CreateResetPasswordTable()error{
 	_, err := s.db.Exec(query)
 	return err
 }
+
+ 
 
 func(s *PostgresStore)insertIntoResetPassword(userID uint64,token string)error{
 	expiration:=time.Now().Add(5*time.Minute)
@@ -213,7 +306,7 @@ func (s *PostgresStore) VerifyToken(token string) error {
 		log.Println(err)
 		return err
 	}
-	_, err = s.db.Exec("delete from emailverification where user_id=$1 token=$2",userID, token)
+	_, err = s.db.Exec("delete from emailverification where user_id=$1 and token=$2",userID, token)
 	log.Println(err)
 	return err
 }

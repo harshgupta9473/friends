@@ -47,11 +47,15 @@ func (s *Server) Run() {
 	router := mux.NewRouter()
 	router.HandleFunc("/register", s.handleregister)
 	router.HandleFunc("/verify", s.handleVerification)
+	router.HandleFunc("/emailverification/{email}",withJWTAuth(s.handleSendEmailforVerification))  //email as var and id as query   `/emailverification/user@example.com?id=123`
 	router.HandleFunc("/forgotpassword", s.ForgotPassword)
 	router.HandleFunc("/test", s.handleTest)
 	router.HandleFunc("/forgotpassword/verify", s.HandleForgotPassword)
 	router.HandleFunc("/forgotpassword/verify/reset", s.HandleResetPassword)
 	router.HandleFunc("/login",s.handleLogin)
+
+	router.HandleFunc("/{email}/profile/update",withJWTAuth(s.handleUserProfileUpdation))
+
 
 	log.Println("JSON API server is running on port:", s.listenAddr)
 	http.ListenAndServe(s.listenAddr, router)
@@ -67,31 +71,22 @@ func (s *Server) handleregister(w http.ResponseWriter, r *http.Request) {
 	err := json.NewDecoder(r.Body).Decode(&newuser)
 	if err != nil {
 		WriteJSON(w, http.StatusBadRequest, err)
-		log.Println(fmt.Errorf("not of correct formate"))
+		log.Println(fmt.Errorf("not of correct format"))
 		return
 	}
 	existingUser, err := s.store.GetUserByEmail(newuser.Email)
 	log.Println(err)
 	if existingUser != nil {
-		if ValidPassword(&newuser, existingUser) {
-			if existingUser.Verified {
-				WriteJSON(w, http.StatusOK, existingUser)
-				return
-			} else {
-				err = s.EmailVerification(existingUser.Email, existingUser.ID)
-				if err != nil {
-					WriteJSON(w, http.StatusInternalServerError, serverError{Error: err.Error()})
-					return
-				}
-				WriteJSON(w, http.StatusOK, "Email sent Successfully: Check your Email")
-				return
-
-			}
-		} else {
 			WriteJSON(w, http.StatusBadRequest, serverError{Error: "user is already registered log in using right credential"})
 			return
 		}
-	}
+	
+	existingUSERwithUserID,err:=s.store.GetUserByUID(newuser.U_ID)
+	log.Println(err)
+	if existingUSERwithUserID != nil {
+			WriteJSON(w, http.StatusBadRequest, serverError{Error: "this username is already taken"})
+			return
+		}
 
 	err = s.NewUserRegistration(newuser)
 	if err != nil {
@@ -105,6 +100,10 @@ func (s *Server) NewUserRegistration(newuser NewUserRequest) error {
 	user, err := s.store.NewRegistraion(newuser)
 	if err != nil {
 		log.Println(fmt.Errorf("error occured"))
+		return err
+	}
+	_,err=s.store.AddIntoUserProfile(UserProfile{U_ID: newuser.U_ID,})
+	if err!=nil{
 		return err
 	}
 	err = s.EmailVerification(newuser.Email, user.ID)
@@ -132,6 +131,23 @@ func (s *Server) EmailVerification(email string, userID uint64) error {
 		return err
 	}
 	return nil
+}
+
+func (s *Server)handleSendEmailforVerification(w http.ResponseWriter,r *http.Request){
+	email:=mux.Vars(r)["email"]
+	idString:=r.URL.Query().Get("id")   // `/emailverification/user@example.com?id=123`
+	id,err:=strconv.Atoi(idString)
+	if err!=nil{
+		WriteJSON(w,http.StatusInternalServerError,serverError{Error: err.Error()})
+		return 
+	}
+	err=s.EmailVerification(email,uint64(id))
+	if err!=nil{
+		WriteJSON(w,http.StatusInternalServerError,serverError{Error: err.Error()})
+		return 
+	}
+	WriteJSON(w, http.StatusOK, "Email sent Successfully: Check your Email")
+	
 }
 
 func (s *Server) handleVerification(w http.ResponseWriter, r *http.Request) {
@@ -217,8 +233,25 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	WriteJSON(w,http.StatusOK,LoginResponse{Email: user.Email,Token: token})
+	WriteJSON(w,http.StatusOK,LoginResponse{U_ID:userData.U_ID,Email: user.Email,Token: token,Verified: userData.Verified})
 
+}
+
+func(s *Server) handleUserProfileUpdation(w http.ResponseWriter,r *http.Request){
+	var userData UserProfile
+	err:=json.NewDecoder(r.Body).Decode(&userData)
+	if err!=nil{
+		WriteJSON(w,http.StatusBadRequest,serverError{Error: "wrong format"})
+		log.Println(err)
+		return
+	}
+	updatedUser,err:=s.store.UpdateUserProfile(userData)
+	if err!=nil{
+		WriteJSON(w,http.StatusBadRequest,serverError{Error: err.Error()})
+		log.Println(err)
+		return
+	}
+	WriteJSON(w,http.StatusOK,updatedUser)
 }
 
 func (s *Server) VerifyResetPasswordToken(r *http.Request) error {
@@ -273,9 +306,37 @@ func (s *Server) ResetPasswordFunc(r *http.Request) error {
 	}
 	return nil
 }
-// func withJWTAuth(handlerFunc http.HandlerFunc, s Storage){
 
-// }
+func withJWTAuth(handlerFunc http.HandlerFunc)http.HandlerFunc{
+	return func(w http.ResponseWriter,r *http.Request){
+		fmt.Println("calling JWT auth middleware")
+		tokenString:=r.Header.Get("x-jwt-token")
+
+		token,err:=validateJWT(tokenString)
+		if err!=nil{
+			WriteJSON(w,http.StatusForbidden,serverError{Error: "forbidden"})
+			return
+		}
+		if !token.Valid{
+			WriteJSON(w,http.StatusForbidden,serverError{Error: "forbidden"})
+			return
+		}
+		claims:=token.Claims.(jwt.MapClaims)
+		email:=mux.Vars(r)["email"]
+		emailFromClaims,ok:=claims["email"].(string)
+		if !ok{
+			WriteJSON(w, http.StatusForbidden, serverError{Error: "forbdden"})
+			return
+		}
+		if email!=emailFromClaims{
+			WriteJSON(w,http.StatusForbidden,serverError{Error:"unauthorised access"})
+			return
+		}
+		
+		handlerFunc(w,r)
+		
+	}
+}
 
 func createJWT(user *User)(string,error){
 	err:=godotenv.Load()
@@ -284,7 +345,7 @@ func createJWT(user *User)(string,error){
 	}
 	key:=os.Getenv("secretKey")
 	token:=jwt.NewWithClaims(jwt.SigningMethodHS256,jwt.MapClaims{
-		"user":user.Email,
+		"email":user.Email,
 		"exp":time.Now().Add(time.Hour*72).Unix(),
 	})
 
